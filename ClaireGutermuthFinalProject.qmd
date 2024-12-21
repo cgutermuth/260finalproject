@@ -1,0 +1,578 @@
+---
+title: "A review of health outcome trends before and after Hurricane Harvey"
+format: html
+echo: false
+warning: false
+---
+By Claire Gutermuth
+
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+
+#Loading hard files as it takes time to query databases
+
+#Load 500 Cities for 2019 (for 2016-2017)
+cities_data_2016_2017 <- read.csv("500_Cities_2019.csv")
+
+#Load PLACES data for 2020 (for 2017-2018)
+places_data_2017_2018 <- read.csv("Places_2020.csv")
+
+#Load census-zip crosswalk (Q3 2017)
+census_zip <- read.csv("ZIP_TRACT_Q3_2017.csv")
+
+#Load list of ZIPs of top FEMA applications
+fema_individual <-
+  read.csv("FEMA_individual_assistance.csv")
+
+# Correct an incorrect zip in the dataset, add a ranking column
+fema_individual <- fema_individual |>
+  mutate(zip_code = ifelse(Zip.Code == "77063", "77077",
+                           Zip.Code),
+         rank = rank(-Total),
+         zip_code = as.numeric(zip_code)
+         ) 
+
+```
+December 20, 2024
+```{r}
+#| echo: false
+# Use ZIP-census tract crosswalk from Q3 2017 (limitation), filter to just those zip codes in FEMA application df
+census_zip <- census_zip |>
+  filter(zip %in% fema_individual$Zip.Code)
+
+#create a new df of zip and tract to left join, add FEMA application assistance ranking
+zip <- data.frame(census_zip$zip, census_zip$tract)
+zip <- zip |>
+  rename(tract = census_zip.tract,
+         zip_code = census_zip.zip) |>
+  left_join(fema_individual, by = "zip_code") |>
+  filter(!is.na(rank))
+
+# Clean PLACE data: 
+# Filter to Texas
+# Add a column for the year
+# Rename a bunch of stuff to match names in Cities dataset
+# Select only relevant columns
+# Filter to only census tracts in the FEMA dataset
+# Add zip data
+# Filter out any ones that didn't have matches 
+places <- places_data_2017_2018 |> 
+  filter(StateDesc == "Texas") |>
+  mutate(Year = 2018) |>
+  rename(
+    tract = TractFIPS,
+    ACCESS2 = ACCESS2_CrudePrev,
+    COLON_SCREEN = COLON_SCREEN_CrudePrev,
+    COREM = COREM_CrudePrev,
+    COREW = COREW_CrudePrev,
+    DENTAL = DENTAL_CrudePrev,
+    MAMMOUSE = MAMMOUSE_CrudePrev,
+    SLEEP = SLEEP_CrudePrev,
+    TEETHLOST = TEETHLOST_CrudePrev,
+    ARTHRITIS = ARTHRITIS_CrudePrev,
+    BINGE = BINGE_CrudePrev,
+    BPHIGH = BPHIGH_CrudePrev,
+    BPMED = BPMED_CrudePrev,
+    CANCER = CANCER_CrudePrev,
+    CASTHMA = CASTHMA_CrudePrev,
+    CHD = CHD_CrudePrev,
+    CHECKUP = CHECKUP_CrudePrev,
+    CHOLSCREEN = CHOLSCREEN_CrudePrev,
+    COPD = COPD_CrudePrev,
+    CSMOKING = CSMOKING_CrudePrev,
+    DIABETES = DIABETES_CrudePrev,
+    HIGHCHOL = HIGHCHOL_CrudePrev,
+    KIDNEY = KIDNEY_CrudePrev,
+    LPA = LPA_CrudePrev,
+    MHLTH = MHLTH_CrudePrev,
+    OBESITY = OBESITY_CrudePrev,
+    PopulationCount = TotalPopulation) |>
+  select(COLON_SCREEN,
+           COREM,
+           COREW,
+           DENTAL,
+           MAMMOUSE,
+           SLEEP,
+           TEETHLOST,
+           ACCESS2,
+           ARTHRITIS,
+           BINGE,
+           BPHIGH,
+           BPMED,
+           CANCER,
+           CASTHMA,
+           CHD,
+           COPD,
+           CSMOKING,
+           DIABETES,
+           HIGHCHOL,
+           KIDNEY,
+           LPA,
+           MHLTH,
+           OBESITY,
+         Year,
+         tract,
+         PopulationCount
+         ) |>
+  filter(tract %in% census_zip$tract) |>
+  left_join(zip, by = "tract") |>
+  filter(!is.na(rank))
+
+# Clean Cities data
+# Rename tract ID for joining
+# Add ZIP data
+# Select only relevant columns
+cities <- cities_data_2016_2017 |> 
+  rename(tract = TractFIPS) |>
+  filter(tract %in% census_zip$tract) |>
+  left_join(zip, by = "tract") |>
+  select(Year, CityName, Category, Measure, DataValueTypeID, Data_Value, Low_Confidence_Limit, High_Confidence_Limit, Data_Value_Footnote, PopulationCount, CategoryID, MeasureId, tract, Short_Question_Text, zip_code, rank
+  )
+
+# Pivot so that outcomes are variables
+cities <- cities %>%
+  group_by(tract, Year, MeasureId, zip_code, PopulationCount) %>%
+  summarise(Data_Value = mean(Data_Value),
+            .groups = "drop") |>
+  pivot_wider(names_from = MeasureId,
+              values_from = Data_Value)
+
+# Bind Cities and PLACES into one data set
+harvey <- bind_rows(places, cities)
+
+# Now that we have our Harvey dataset, clean a bit further -- select relevant columns again
+# Re-add ZIP data and take out any entries that don't have ZIP data
+harvey <- harvey |>
+  select(-zip_code, -Zip.Code, -Total, -City, -County, -rank, -PAPTEST, -PHLTH, -STROKE, -CHOLSCREEN, -CHECKUP) |>
+  left_join(zip, by = "tract") |>
+  filter(!is.na(zip_code))
+
+
+```
+
+```{r}
+#| echo: false
+# For graphs: collapse 2016 and 2017 across tracts since some measures were taken one year and others were taken the other
+harvey_collapsed <- harvey %>% 
+  mutate(Collapsed_Years = ifelse(Year %in% c(2016, 2017), "2017", as.character(Year))) %>%
+  group_by(Collapsed_Years, zip_code) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+# Some zips in the 2016-2017 data set are not represented. Create a list of the zip codes of the ones are represented.
+zip_2016_2017 <- harvey_collapsed %>%
+  filter(Collapsed_Years == "2017") %>%
+  pull(zip_code) %>%
+  unique()
+
+# Filter out the Zips with missing data for 2016-2017
+harvey_collapsed <- harvey_collapsed |>
+  filter(zip_code %in% zip_2016_2017)
+
+```
+On the evening of August 25th, 2017, Hurricane Harvey made its first landfall in the United States along the Texas coast. Over the next five days, the Category 4 storm slowed to a near halt while it continued to dump torrential rains over the greater Houston metropolitan area, the country’s fourth most populous city. What would ensue was one of the most destructive natural disasters in United States history.
+
+[According to some estimates](https://jamanetwork.com/journals/jama/fullarticle/2654052), more than 33 trillion gallons of water were released onto Texas and Louisiana over the course of those five days, resulting in record-breaking rainfall of 56 inches in some places. At least 13 million people were directly affected by the storm, while tens of thousands were rescued from flood waters, and over 100 died. Just days after landfall, thousands of homes had been destroyed, with over [17,000 sustaining major damage](https://apnews.com/article/us-news-ap-top-news-burlington-houston-north-america-44af0775d467489f97ab0cdc5baad737). At an estimated cost of $125 billion dollars in damages, Hurricane Harvey ties Hurricane Katrina as the costliest natural disaster the country has ever seen.
+
+After a natural disaster, is it common for population health conditions to worsen. This is particularly true of mental health: [one study](https://pubmed.ncbi.nlm.nih.gov/15462535/) found that rates of post-traumatic stress disorder were high amongst victims of an extreme flood in Tobasco, Mexico, in 1999. One of the most affected areas, Tezuitlán, which experienced mass casualties and displacement, had a prevalence of nearly 50% six months after the disaster occurred. [Another analysis of mental health after hurricanes](https://jamanetwork.com/journals/jama/fullarticle/2654052) showed that up to half of survivors who were directly in the storm’s path risked developing post-traumatic stress disorder, echoing these findings. 
+
+Natural disasters can also exacerbate existing health conditions: [one survey of the disparities in health effects](https://journals.sagepub.com/doi/pdf/10.1177/0033354920930133) post-Hurricane Harvey found that those who evacuated had 36% greater odds of reporting more than one physical health problem for each additional adverse event they experienced (e.g., loss of irreplaceable items, being separated from family members, or being in dangerous or unsafe situations). Disasters may also create environmental hazards, which in turn have an impact on population health. A major concern specific to Houston is the increase in exposure to biohazards: with each hurricane, pollutants and trash mix with floodwaters that rise from the bayous that rove throughout the city. It is estimated that Harvey created a [whopping 6 million cubic meters](https://www.cambridge.org/core/journals/disaster-medicine-and-public-health-preparedness/article/abs/spatial-and-temporal-investigation-of-medical-surge-in-dallasfort-worth-during-hurricane-harvey-texas-2017/A0E8522392302BFCF79ECBF1DC444859) of garbage within Houston city limits alone, much of it intermingling in the flood and exposing its citizens to toxic levels of chemicals they may not have encountered otherwise.
+
+Extreme disasters are costly on a healthcare system as well: [according to the Center for Disease Control](https://www.cdc.gov/nssp/php/story/data-shows-ed-surge-after-hurricane-harvey.html), in the weeks following Harvey, at least 10 hospitals experienced a 600% ED visit surge from evacuees, two of which experienced a greater than 1,000% surge. In response to Harvey's strain on the health system, the U.S. Department of Health and Human Services’ Administration for Strategic Preparedness and Response published a [2018 Healthcare System Recovery Guide](https://aspr.hhs.gov/HealthCareReadiness/Recovery/Documents/TX-HC-Recovery-Guide-10July2018.pdf) recommending that hospital systems “prepare to utilize all financial assistance avenues available” and “identify contingency arrangements, contracts, and relationships with financial institutions to extend lines of credit for longer periods post-disaster.” 
+
+Though the negative impact of these natural disasters on human health is well-documented, much of the available literature either focuses on the acute effects directly after the storm, or regards a specific population or disease. There is little comparison of incidence rates between disparate conditions, particularly for the general population. 
+
+The analysis below outlines the change in several health measures from 2017 to 2018 for the areas in Houston most affected by Hurricane Harvey. The hardest hit areas were defined as the 20 zip codes with the [highest number of FEMA applications](https://www.khou.com/article/weather/harvey/report-highlights-top-20-areas-hit-hardest-by-hurricane-harvey/285-493668432) for individual assistance as of November 21, 2017. The list was culled down to 14 zip codes based on available health measure data from the Center for Disease Control's 500 Cities and Places data. The graph represents the change in crude prevalence for various health measures from 2017 to 2018 aggregated across zip codes.
+
+```{r}
+#| echo: false
+# Do some fancy pivoting to transform the data set into side-by-side comparisons of health conditions across years for all zips
+# Pivot to create frame with year, condition, and value
+# Group to ensure each condition has one line per year
+# Collapse by taking mean change across zips
+# Create a column for the change
+change_data <- harvey_collapsed %>%
+  pivot_longer(
+    cols = where(is.numeric),  # Pivot only numeric columns
+    names_to = "Condition",
+    values_to = "Value"
+  ) %>%
+  group_by(Condition, Collapsed_Years) %>%  # Ensure unique combinations
+  summarise(Value = mean(Value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = Collapsed_Years, 
+    values_from = Value) %>%
+  mutate(Change = `2018` - `2017`)
+
+# Remove unnecessary rows
+# Rename variables for graph
+change_data <- change_data |>
+  filter(
+    !Condition %in% c(
+      "PopulationCount", "Total", "Year", "rank", "tract", "zip_code", "Zip.Code")) |>
+  mutate(
+    Condition = case_when(
+      Condition == "COLON_SCREEN" ~ "Colorectal cancer screening",
+      Condition == "COREM" ~ "Men 65+ Up to Date on Preventive Care",
+      Condition == "COREW" ~ "Women 65+ Up to Date on Preventive Care",
+      Condition == "DENTAL" ~ "Dentist Visit in Last Year",
+      Condition == "MAMMOUSE" ~ "Mammogram Up-to-Date",
+      Condition == "SLEEP" ~ "Short Sleep Duration",
+      Condition == "TEETHLOST" ~ "All Teeth Lost",
+      Condition == "ACCESS2" ~ "Lack of Health Insurance",
+      Condition == "ARTHRITIS" ~ "Arthritis",
+           Condition == "BINGE" ~ "Binge Drinking",
+           Condition == "BPHIGH" ~ "High Blood Pressure",
+           Condition == "BPMED" ~ "Taking Blood Pressure Medication",
+           Condition == "CANCER" ~ "Cancer",
+           Condition == "CASTHMA" ~ "Asthma",
+           Condition == "CHD" ~ "Coronary Heart Disease",
+           Condition == "CHECKUP" ~ "Checkup in Last Year",
+           Condition == "CHOLSCREEN" ~ "Recent Cholestoral Screening",
+           Condition == "COPD" ~ "COPD",
+           Condition == "CSMOKING" ~ "Currently Smoking",
+           Condition == "DIABETES" ~ "Diabetes",
+           Condition == "HIGHCHOL" ~ "High Cholesterol",
+           Condition == "KIDNEY" ~ "Kidney Disease",
+           Condition == "LPA" ~ "Lack of Leisure Time Physical Activity",
+           Condition == "MHLTH" ~ "Frequent Mental Distress",
+           Condition == "OBESITY"~ "Obesity",
+      TRUE ~ Condition),
+    AbsChange = abs(Change)) |>
+  arrange(by = AbsChange)
+
+change_data |>
+ # filter(!Condition %in% c("Recent Cholestoral Screening", "Binge Drinking", "Checkup in Last Year")) |>
+  ggplot(aes(x = Change, y = reorder(Condition, Change), color = Change)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = round(Change, 1)), hjust = -0.3, color = "black", size = 3) +
+  labs(
+    title = "Change in Health Conditions from 2017 to 2018 
+    for Areas Hit Hardest by Hurricane Harvey",
+    x = "Change in Crude Prevalence (%)",
+    y = "Health Condition"
+  ) +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_minimal()
+```
+
+According to this graph, nearly every measure was impacted negatively from one year to the next: generally speaking, prevalence of most health conditions increased, while use of preventive services decreased. The most striking difference between years is the prevalence of 65+ individuals who are up-to-date on a core set of clinical preventive services, including having had a flu shot in the past year, having had a PPV shot ever, and having had a colorectal cancer screening in the last 2 years. These relatively large decreases are more pronounced for women (down 8.6%) than men (down 6.3%). 
+
+Changes in healthcare utilization after hurricanes are not uncommon: patients frequently delay, reduce, or terminate treatments due to cost, inconvenience, or lack of access. Care itself may be restricted depending on damages to the area, causing patients to switch to telehealth or to use less-affected facilities. One [longitudinal study](https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2786997) regarding healthcare utilization for survivors of Hurricane Harvey documented significant declines in visits to primary care providers (PCP) amongst veterans – in some cases, a radical decrease of nearly a half. These declines persisted well after two months post-hurricane and were greatly lower than projections of PCP utilization outlined by the study authors. In this study, a total 22.4% of respondents reported going without access to health care during or soon after Harvey. Given that adults over 65 are a particularly vulnerable group, especially in the context of natural disasters, it is plausible that the decrease in preventive care was accelerated by the hurricane.
+
+Perhaps somewhat intuitively, conditions such as obesity, short sleep duration, diabetes, and high cholesterol had relatively larger increases in prevalence compared to other, less lifestyle-related diseases, including kidney disease and non-melanoma cancer. This echoes findings from an article regarding [chronic diseases and associated risk factors among adults in Puerto Rico after Hurricane Maria](https://watermark.silverchair.com/mattei_2022_oi_211123_1641393919.80835.pdf?token=AQECAHi208BE49Ooan9kkhW_Ercy7Dm3ZL_9Cf3qfKAc485ysgAAA0QwggNABgkqhkiG9w0BBwagggMxMIIDLQIBADCCAyYGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMp9vBPoTEaUyqfajEAgEQgIIC9w4GoHZ4w0U6iikQz-Ja-JP3w3PLkrTc2ZZvDgtehNyNxD11O8bcB-Zuo4NiV5y1BdbV47Bp4WonSWPhw3ctncJKyvqwaRYUyT7nucae906XXqGfCZK-4gbej81xJ0zXe0NXs9yBbMnnmI1Z12JGDgxjCFGDAZS2d0i5czzWjlnuZivHjE0vVmrBHO-lLrvWBPZMEORji1LpkyhAEyjzuKGjMwNMIsPTgzbnQQAmKoJgrFPxux1Ol4a6Of6gQH3R0Hd1khRoKryZ0Zw_VS2cRROOJtday_sR7U6JqUxCSibeEFbJBK4mxqWrWAfXuOq_g-AcO9Y7YEx8xfAwJ8dE1Iohpfx7F91IDeSiFF5pO2AJPLegrAsrGoolUetGKrpNeVUI5k8uUbLC-cNDdd5Fn2xBXe8KU0SygmCIf_oCm2p6_vcez9GCZjpuPsE1XB5psFOttamTMSIaaX-qN4mx7xiBP0P6UhrWSI3RQLTv0Lv-PY3JPcKnIuSOP_6dkbMKcqj6CywH4cr8pR3c3fbavy7Ai9_uIXHqYeefY4wuiHLtTwNEqFXr2NLO5Ot9dAw8iwRbwDeOGr8851v5YI58oqWBbttLxjRg5x1AcN83fjgZuSSOgSbUgcAfx4vx_xMqU4623qQ3Tj94YpCr2iZatQnRRDvqutA0S2fr1bLywrYM7crS2vXmUrzSml1Iyh_qDUObZaiOym9BHmWHDppSbggpp7FQ8J7vLcHgJB24-j5-2MhCOS5J8Ey--gWJox0mrhmTApVHt83DbEnr2YwIRr-kFuE4ZNr5PDuo2puG-F4Aka-qmC1FMcMyWthRmO5gvU61MyU76GrjU4OdrqWAj__XeGbzEAWaFw8nkMJXdC44el3c51TM3rToCdJCIVAj7zr_DBIRiKINSZeiYdvC8inti1tdLobWsn2TjTRSuxQzEaLBhVpNqVUQxCjIKozPTMRGNW_Sj2_wHJHZJcyYPaTWFU4jfhY6-JqXFgqoi6pcGzkqrQKjFQ). Comparing health measures collected in 2015 and again in 2019, researchers found significant increases in sedentarism, obesity, hypertension, arthritis, and high cholesterol after the hurricane, suggesting that the hurricane negatively impacted supportive health and lifestyle factors. This study also found a significant decrease in yearly influenza vaccination rates.
+
+It is also worth underscoring that across the zip codes most affected by Hurricane Harvey, the prevalence of those 18 years or older without health insurance decreased by 2.5%. Though there is little available data on the direct effect natural disasters may have on health insurance rates, one thing is for sure: lack of health insurance is consistently associated with poorer health. One [analysis of factors associated with poor health outcomes among Vietnamese Americans after Hurricane Harvey](https://journals.sagepub.com/doi/pdf/10.1177/00333549221148169) reported that survey respondents with health insurance had 75% lower odds of reporting poor physical health post-storm compared to participants without health insurance. The most plausible explanation is that insured individuals are more likely to seek care after the onset of symptoms, while those who are uninsured may choose to delay because of cost.
+
+This next graph represents changes in prevalence of preventive care and access to health insurance on a more granular level. Zip codes are ranked from left to right in order of most applications to least. 
+
+
+```{r}
+#| echo: false
+change_data2 <- harvey_collapsed %>%
+  mutate(zip_code = as.character(zip_code),
+         rank = as.character(rank)) |>
+  pivot_longer(
+    cols = where(is.numeric),  # Pivot only numeric columns
+    names_to = "Condition",
+    values_to = "Value"
+  ) %>%
+  group_by(Condition, Collapsed_Years, zip_code, rank) %>%  # Ensure unique combinations
+  summarise(Value = mean(Value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = Collapsed_Years, 
+    values_from = Value) %>%
+  mutate(Change = `2018` - `2017`,
+         rank = as.numeric(rank))
+
+change_data2 <- change_data2 %>%
+  arrange(rank) %>%  # Sort by descending rank
+  mutate(zip_code = factor(zip_code, levels = unique(zip_code)))
+
+change_data2 |>
+  arrange(rank) |>
+  filter(Condition %in% c("COREW", "COREM", "ACCESS2")) |>
+  ggplot(aes(x = zip_code, y = Change, fill = Condition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Differences in Preventive Care and Health Insurance Prevalence
+    for Each ZIP Code",
+    x = "ZIP Code",
+    y = "Value",
+    fill = "Change"
+  ) +
+  scale_fill_manual(
+    values = c("COREW" = "blue", "COREM" = "green", "ACCESS2" = "red"),  # Optional custom colors
+    labels = c("COREW" = "Women 65+ Up to Date on Preventive Care", 
+               "COREM" = "Men 65+ Up to Date on Preventive Care", 
+               "ACCESS2" = "Lack of Health Insurance")  # Custom legend labels
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+
+```
+Here we see that the hardest-hit zip codes tended to experience the most drastic decreases in preventive care, as well as the most drastic increases in lack of insured individuals before and after the hurricane. The zip code with the largest average decrease in preventive services for older adults, as well as the largest increase in individuals without health insurance, was 77044. Based in Northwest Houston, this area encompasses not one, but two bayous, and according to the [Texas Real Estate Research Center](https://trerc.tamu.edu/article/imperfect-storm/), 48% of the homes in this area were damaged by the storm. While residents in this area earn an average of $73,589 per year, much higher than the median income level of $53,657, every single other one of the top-ten most damaged zip codes earned well below the median income, adding to the devastation of the storm.
+
+An additional data cut further demonstrates the changes in preventive care and access to health insurance within Houston:
+
+
+```{r}
+#| echo: false
+harvey_collapsed_long <- harvey_collapsed %>%
+  pivot_longer(
+    cols = c(COREW, COREM),  # Specify the variables you want to include
+    names_to = "Condition",
+    values_to = "Value"
+  ) |>
+  arrange(by = rank)
+
+harvey_collapsed_long |>
+  ggplot(aes(x = Collapsed_Years, y = reorder(as.factor(zip_code), -rank), fill = Value)) +
+  geom_tile() +
+  geom_text(aes(label = round(Value, 1)), color = "black", size = 3) +
+  facet_wrap(~Condition, scales = "free_y", labeller = as_labeller(c(
+  COREW = "Women",
+  COREM = "Men"
+))) +
+  scale_fill_gradient(low = "blue", high = "white") +
+  labs(
+    title = "Decrease in Prevalence of Preventive Care 
+    among 65+ Adults Before and After Hurricane Harvey",
+    x = "Years",
+    y = "Zip Code",
+    fill = "Crude Prevalence (%)"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+#| echo: false
+harvey_collapsed |>
+  ggplot(aes(x = Collapsed_Years, y = reorder(as.factor(zip_code), -rank), fill = ACCESS2)) +
+  geom_tile() +
+  geom_text(aes(label = round(ACCESS2, 1)), color = "black", size = 3) +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(
+    title = "Increase in Lack of Health Insurance Before and After Hurricane Harvey",
+    x = "Years",
+    y = "Zip Code",
+    fill = "Crude Prevalence (%)"
+  ) +
+  theme_minimal()
+
+```
+The right of each graph is markedly darker than the left, demonstrating an increase in prevalence across zip codes. The starkest differences come from 77044 for both elderly women’s use of preventive services and access to health insurance, likely driving the averages up when the data is aggregated overall.
+
+A final chart highlights the change in these measures over time:
+
+```{r}
+#| echo: false
+#Load PLACES data 2021 (for 2019)
+places_data_2019 <- read.csv("Places_2021.csv")
+
+#Load PLACES data 2022 (for 2020)
+places_data_2020 <- read.csv("Places_2022.csv")
+
+#Similarly transform Places 2019
+places2 <- places_data_2019 |> 
+  filter(StateDesc == "Texas") |>
+  mutate(Year = 2019) |>
+  rename(
+    tract = TractFIPS,
+    ACCESS2 = ACCESS2_CrudePrev,
+    COLON_SCREEN = COLON_SCREEN_CrudePrev,
+    COREM = COREM_CrudePrev,
+    COREW = COREW_CrudePrev,
+    DENTAL = DENTAL_CrudePrev,
+    MAMMOUSE = MAMMOUSE_CrudePrev,
+    SLEEP = SLEEP_CrudePrev,
+    TEETHLOST = TEETHLOST_CrudePrev,
+    ARTHRITIS = ARTHRITIS_CrudePrev,
+    BINGE = BINGE_CrudePrev,
+    BPHIGH = BPHIGH_CrudePrev,
+    BPMED = BPMED_CrudePrev,
+    CANCER = CANCER_CrudePrev,
+    CASTHMA = CASTHMA_CrudePrev,
+    CHD = CHD_CrudePrev,
+    CHECKUP = CHECKUP_CrudePrev,
+    CHOLSCREEN = CHOLSCREEN_CrudePrev,
+    COPD = COPD_CrudePrev,
+    CSMOKING = CSMOKING_CrudePrev,
+    DIABETES = DIABETES_CrudePrev,
+    HIGHCHOL = HIGHCHOL_CrudePrev,
+    KIDNEY = KIDNEY_CrudePrev,
+    LPA = LPA_CrudePrev,
+    MHLTH = MHLTH_CrudePrev,
+    OBESITY = OBESITY_CrudePrev,
+    PopulationCount = TotalPopulation) |>
+  select(COLON_SCREEN,
+           COREM,
+           COREW,
+           DENTAL,
+           MAMMOUSE,
+           SLEEP,
+           TEETHLOST,
+           ACCESS2,
+           ARTHRITIS,
+           BINGE,
+           BPHIGH,
+           BPMED,
+           CANCER,
+           CASTHMA,
+           CHD,
+           CHECKUP,
+           CHOLSCREEN,
+           COPD,
+           CSMOKING,
+           DIABETES,
+           HIGHCHOL,
+           KIDNEY,
+           LPA,
+           MHLTH,
+           OBESITY,
+         Year,
+         tract,
+         PopulationCount
+         ) |>
+  filter(tract %in% census_zip$tract) |>
+  left_join(zip, by = "tract") |>
+  filter(!is.na(rank))
+
+#Similarly transform Places 2020
+places3 <- places_data_2020 |> 
+  filter(StateDesc == "Texas") |>
+  mutate(Year = 2020) |>
+  rename(
+    tract = TractFIPS,
+    ACCESS2 = ACCESS2_CrudePrev,
+    COLON_SCREEN = COLON_SCREEN_CrudePrev,
+    COREM = COREM_CrudePrev,
+    COREW = COREW_CrudePrev,
+    DENTAL = DENTAL_CrudePrev,
+    MAMMOUSE = MAMMOUSE_CrudePrev,
+    SLEEP = SLEEP_CrudePrev,
+    TEETHLOST = TEETHLOST_CrudePrev,
+    ARTHRITIS = ARTHRITIS_CrudePrev,
+    BINGE = BINGE_CrudePrev,
+    BPHIGH = BPHIGH_CrudePrev,
+    BPMED = BPMED_CrudePrev,
+    CANCER = CANCER_CrudePrev,
+    CASTHMA = CASTHMA_CrudePrev,
+    CHD = CHD_CrudePrev,
+    CHECKUP = CHECKUP_CrudePrev,
+    CHOLSCREEN = CHOLSCREEN_CrudePrev,
+    COPD = COPD_CrudePrev,
+    CSMOKING = CSMOKING_CrudePrev,
+    DIABETES = DIABETES_CrudePrev,
+    HIGHCHOL = HIGHCHOL_CrudePrev,
+    KIDNEY = KIDNEY_CrudePrev,
+    LPA = LPA_CrudePrev,
+    MHLTH = MHLTH_CrudePrev,
+    OBESITY = OBESITY_CrudePrev,
+    PopulationCount = TotalPopulation) |>
+  select(COLON_SCREEN,
+           COREM,
+           COREW,
+           DENTAL,
+           MAMMOUSE,
+           SLEEP,
+           TEETHLOST,
+           ACCESS2,
+           ARTHRITIS,
+           BINGE,
+           BPHIGH,
+           BPMED,
+           CANCER,
+           CASTHMA,
+           CHD,
+           CHECKUP,
+           CHOLSCREEN,
+           COPD,
+           CSMOKING,
+           DIABETES,
+           HIGHCHOL,
+           KIDNEY,
+           LPA,
+           MHLTH,
+           OBESITY,
+         Year,
+         tract,
+         PopulationCount
+         ) |>
+  filter(tract %in% census_zip$tract) |>
+  left_join(zip, by = "tract") |>
+  filter(!is.na(rank))
+
+# Create new dataset with 2017-2020
+harvey2 <- bind_rows(harvey, places2, places3)
+
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+harvey2_collapsed_summary <- harvey2 %>%
+  mutate(Collapsed_Years = ifelse(Year %in% c(2016, 2017), "2017", as.character(Year))) %>%
+  pivot_longer(
+    cols = where(is.numeric),  # Reshape all numeric columns to long format
+    names_to = "Condition",    # Column to store condition names
+    values_to = "Value"        # Column to store condition values
+  ) %>%
+  group_by(Collapsed_Years, Condition) %>%  # Group by years and conditions
+  summarise(
+    Mean_Value = mean(Value, na.rm = TRUE),  # Calculate mean for each condition
+    .groups = "drop"
+  )
+
+harvey2_collapsed_summary |>
+  filter(Condition %in% c("COREW", "COREM", "ACCESS2")) |>
+  mutate(
+    Mean_Value = ifelse(Condition == "ACCESS2" & Collapsed_Years == "2017", 26.79145, Mean_Value),
+    Mean_Value = ifelse(Condition == "ACCESS2" & Collapsed_Years == "2018", 29.30694, Mean_Value))|>
+  ggplot(aes(x = Collapsed_Years, y = Mean_Value, color = Condition, group = Condition)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(
+  values = c("COREW" = "blue", "COREM" = "green", "ACCESS2" = "red"),  # Custom colors
+  labels = c("COREW" = "Women 65+ Up to Date on Preventive Care", "COREM" = "Men 65+ Up to Date on Preventive Care", "ACCESS2" = "Lack of Health Insurance")  # Custom labels
+  ) +
+  labs(
+    title = "Trends in Health Across Years for Most
+    Affected Areas by Hurricane Harvey",
+    x = "Year",
+    y = "Crude Prevalence Across Zip Codes (%)",
+    color = "Condition"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+From 2017 to 2018, the number of uninsured individuals has a consistent downward trend. According to the 2024 release of the [American Community Survey](https://www2.census.gov/library/publications/2024/demo/acsbr-021.pdf) run by the U.S. Census Bureau, 21.7% of Texas adults age 19 to 64 went without health insurance in 2023. This makes Texas the worst-ranked state in the nation with regards to number of adults uninsured, and in fact, the rate is nearly double the nation’s average of 11%. One reason for this is Texas’ continued refusal to expand Medicaid. The state is one of ten in the nation that has not implemented the expansion, a measure that would allow an estimated 1.4 million currently uninsured workers to have access to health insurance. According to the Texas Medical Association, the uninsured are up to four times less likely to have regular health care and are more likely to die from health-related problems. They estimate that extending healthcare coverage could improve the overall health of the uninsured by 7 to 8%.
+
+The graph also reveals a marked rebound in the prevalence of both women and men over 65 who had received preventive care (there is no change between 2018 and 2019 because this health measure was only collected every two years until 2018, when the data started being collected yearly.) This trend could be indicative of resilience, which would be welcome news. Unfortunately, it is beyond the limits of this analysis to ascertain the true reasons for these changes. It is worth noting that while these graphs provide an overview of directional changes in health and social vulnerability before and after Hurricane Harvey, they are not indicative of a causal effect. 
+
+Most importantly, due to limitations in the information available, these analyses do not control for demographic or socioeconomic factors, many of which are known to affect health outcomes. For example, according to a [New York Times article](https://www.nytimes.com/2018/09/03/us/hurricane-harvey-houston.html), surveys conducted in August of 2018 revealed that of those with badly damaged homes, 27% of Hispanic individuals reported that their homes still remained unsafe to live in a year later, significantly more than the 20% of Black individuals and 11% of White individuals in the same situation. Another [analysis of healthcare utilization](https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2786997) among veterans before and after Harvey aptly notes: “changes in health status and health care utilization following disasters are not universal in populations exposed to hurricanes or flooding…the presence, magnitude, and duration of negative outcomes following disasters are often highly conditioned on race and ethnicity and socioeconomic status. Indeed, differential social vulnerabilities before flooding or other disaster exposures frequently exacerbate and accelerate differential trajectories following disasters.”
+
+It is also true that outside of demographic and social variables, there may be other factors at play. In 2019, the [Houston Area Agency for Aging](https://www.houstonhealth.org/media/5626/download) from the Houston Health Department proposed a robust plan to increase healthcare access for seniors, focusing on preventive care. It is possible that the seeming resilience in this measure over more recent years has in part to do with increased government funding or strengthened outreach programs such as this one.
+
+I point this out not to diminish the analysis above, but to demonstrate how little we know about the true effects of natural disasters. The current literature justifiably focuses on the immediate effects of hurricanes where there is the most dire need; longer-spanning studies often focus on more specified, rather than general, populations and conditions due to resource constraints.  Some of the most reliable broader population health data comes from the Census and the Center for Disease Control, the collection and publishing of which has years in lead time. Furthermore, when a hurricane hits, data collection is likely the last thing on any sane person’s mind.
+
+Nevertheless, a decision is only as good as the data that informs it, and there is a dearth of information on longitudinal health outcomes after hurricanes to help shape disaster relief policy. Harvey is one example of the astounding devastation that these events can incur. How many more will we need before we start collecting the necessary data to plan in advance?
+
+
+
+
+
+
+
+
+
+
+

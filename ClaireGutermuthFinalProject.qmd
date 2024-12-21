@@ -18,10 +18,14 @@ library(dplyr)
 #Loading hard files as it takes time to query databases
 
 #Load 500 Cities for 2019 (for 2016-2017)
-cities_data_2016_2017 <- read.csv("500_Cities_2019.csv")
+cities1 <- read.csv("500Cities1.csv")
+cities2 <- read.csv("500Cities2.csv")
+cities_data_2016_2017 <- rbind(cities1, cities2)
 
 #Load PLACES data for 2020 (for 2017-2018)
-places_data_2017_2018 <- read.csv("Places_2020.csv")
+places1 <- read.csv("Places2020_1.csv")
+places2 <- read.csv("Places2020_2.csv")
+places_data_2017_2018 <- rbind(places1, places2)
 
 #Load census-zip crosswalk (Q3 2017)
 census_zip <- read.csv("ZIP_TRACT_Q3_2017.csv")
@@ -375,10 +379,16 @@ A final chart highlights the change in these measures over time:
 ```{r}
 #| echo: false
 #Load PLACES data 2021 (for 2019)
-places_data_2019 <- read.csv("Places_2021.csv")
+places1 <- read.csv("Places2021_1.csv")
+places2 <- read.csv("Places2021_2.csv")
+places_data_2019 <- rbind(places1, places2)
+
 
 #Load PLACES data 2022 (for 2020)
-places_data_2020 <- read.csv("Places_2022.csv")
+places1 <- read.csv("Places2022_1.csv")
+places2 <- read.csv("Places2022_2.csv")
+places_data_2020 <- rbind(places1, places2)
+
 
 #Similarly transform Places 2019
 places2 <- places_data_2019 |> 
